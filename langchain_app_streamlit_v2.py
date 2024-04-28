@@ -1,0 +1,117 @@
+import streamlit as st
+import _mysql_connector
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.utilities import SQLDatabase
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnablePassthrough
+from langchain_openai import AzureChatOpenAI
+import pandas as pd
+import json
+import mysql.connector
+import mysql
+import pymysql
+import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# api and password
+uri = os.getenv('uri')
+
+# declare llm
+llm = AzureChatOpenAI(
+    deployment_name=os.getenv('deployment_name'),
+    openai_api_version=os.getenv('openai_api_version'),
+    openai_api_key=os.getenv('openai_api_key'),
+    azure_endpoint=os.getenv('azure_endpoint')
+)
+
+# connect database
+db_uri = uri
+db = SQLDatabase.from_uri(db_uri)
+
+# connect database v2
+cnx = mysql.connector.connect(
+  host=os.getenv('host'),
+  user=os.getenv('user'),
+  password=os.getenv('password'),
+  database = os.getenv('database')
+)
+
+# get schema
+db_schema = db.get_table_info()
+
+# run query
+def run_query(query):
+    return db.run(query)
+
+# create table for chat history
+history_message = pd.DataFrame(columns=["question", "answer"])
+
+# template
+template = """
+Below listed the database schema, write MySQL query based on the text inputted, you should consider Message History when creating SQL query just in case it is a follow-up question from previous question:
+{schema}
+
+Question: {question}
+Message History: {history_message}
+SQL Query:
+"""
+aiprompt = ChatPromptTemplate.from_template(template)
+
+# second template
+template = """
+Based on the table schema below, question, sql query, and sql response, write a natural language response:
+{schema}
+
+Question: {question}
+SQL Query: {query}
+SQL Response: {response}
+"""
+prompt = ChatPromptTemplate.from_template(template)
+
+# create chain
+sql_chain = (
+    aiprompt
+    | llm.bind(stop="\nSQL Result:")
+    | StrOutputParser()
+)
+
+# create full chain
+full_chain = (
+     prompt
+    | llm
+    | StrOutputParser()
+)
+
+
+########################## MAIN APP #####################################
+st.title("XERATIC DATABASE CHATBOT")
+
+# Input field for the user to type a message
+user_message = st.text_input("Enter your message:")
+
+if user_message:
+    try:
+        # run query dirrectly without using langchain
+        jawaban = sql_chain.invoke({"schema": db_schema, "question": user_message, "history_message": history_message})
+        cursor=cnx.cursor()
+        query=(jawaban)
+        cursor.execute(query)
+        data = []
+        for row in cursor:
+            data.append(row)
+        df = pd.DataFrame(data, columns=cursor.column_names)
+        respon = full_chain.invoke({"question": user_message, "query": jawaban, "response": df, "schema": db_schema})
+        push_history = {'question':user_message, 'answer':respon}
+        history_message.loc[len(history_message)] = push_history
+
+        st.write("Generate Query:")
+        jawaban
+        st.write("Database Output:")
+        df
+        respon
+
+    except Exception as e:
+        st.write(f"An error occurred: {e}")

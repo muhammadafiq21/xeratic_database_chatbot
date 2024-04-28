@@ -1,0 +1,4 @@
+pertama, run pip install -U openai. harus berada pada openai versi 1.x
+
+
+
