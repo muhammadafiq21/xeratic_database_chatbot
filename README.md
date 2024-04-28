@@ -1,0 +1,1 @@
+Text to SQL is a tool that can help you generate SQL queries from natural language. This can make it much easier to use SQL, even if you are not a programmer.
