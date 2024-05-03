@@ -51,7 +51,8 @@ history_message = pd.DataFrame(columns=["question", "answer"])
 
 # template
 template = """
-Below listed the database schema, write MySQL query based on the text inputted, you should consider Message History when creating SQL query just in case it is a follow-up question from previous question:
+Below listed the database schema, write MySQL query based on the text inputted, always write the table name when selecting column.
+you should consider Message History when creating SQL query just in case it is a follow-up question from previous question:
 {schema}
 
 Question: {question}
@@ -91,6 +92,8 @@ st.title("XERATIC DATABASE CHATBOT")
 
 # Input field for the user to type a message
 user_message = st.text_input("Enter your message:")
+tab_titles = ["Result","Query","Reason"]
+tabs = st.tabs(tab_titles)
 
 if user_message:
     try:
@@ -107,11 +110,15 @@ if user_message:
         push_history = {'question':user_message, 'answer':respon}
         history_message.loc[len(history_message)] = push_history
 
-        st.write("Generate Query:")
-        jawaban
-        st.write("Database Output:")
-        df
-        respon
+        with tabs [1]:
+          st.write("Generate Query:")
+          st.code(jawaban, language="sql")
+        with tabs [0]:
+          st.write("Database Output:")
+          df
+        with tabs [2]:
+          st.write("Reason:")
+          respon
 
     except Exception as e:
         st.write(f"An error occurred: {e}")
