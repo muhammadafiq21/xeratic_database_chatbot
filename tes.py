@@ -1,25 +1,33 @@
 import streamlit as st
-import _mysql_connector
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.utilities import SQLDatabase
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 from langchain_openai import AzureChatOpenAI
 import pandas as pd
-import json
 import mysql.connector
-import mysql
-import pymysql
-import re
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# api and password
+# Load environment variables
 uri = os.getenv('uri')
+db_uri = uri
 
-# declare llm
+# Connect to MySQL
+cnx = mysql.connector.connect(
+    host=os.getenv('host'),
+    user=os.getenv('user'),
+    password=os.getenv('password'),
+    database=os.getenv('database')
+)
+
+# Connect to the database
+db = SQLDatabase.from_uri(db_uri)
+db_schema = db.get_table_info()
+
+# Initialize Azure Chat OpenAI
 llm = AzureChatOpenAI(
     deployment_name=os.getenv('deployment_name'),
     openai_api_version=os.getenv('openai_api_version'),
@@ -27,30 +35,15 @@ llm = AzureChatOpenAI(
     azure_endpoint=os.getenv('azure_endpoint')
 )
 
-# connect database
-db_uri = uri
-db = SQLDatabase.from_uri(db_uri)
+# Initialize chat history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
 
-# connect database v2
-cnx = mysql.connector.connect(
-  host=os.getenv('host'),
-  user=os.getenv('user'),
-  password=os.getenv('password'),
-  database = os.getenv('database')
-)
-
-# get schema
-db_schema = db.get_table_info()
-
-# run query
-def run_query(query):
-    return db.run(query)
-
-# create table for chat history
+# Create table for chat history
 history_message = pd.DataFrame(columns=["question", "answer"])
 
-# template
-template = """
+# Define chat prompt template for database query
+db_template = """
 Below listed the database schema, write MySQL query based on the text inputted, always write the table name when selecting column.
 you should consider Message History when creating SQL query just in case it is a follow-up question from previous question:
 {schema}
@@ -59,10 +52,11 @@ Question: {question}
 Message History: {history_message}
 SQL Query:
 """
-aiprompt = ChatPromptTemplate.from_template(template)
 
-# second template
-template = """
+db_prompt = ChatPromptTemplate.from_template(db_template)
+
+# Define chat prompt template for SQL response
+sql_template = """
 Based on the table schema below, question, sql query, and sql response, write a natural language response:
 {schema}
 
@@ -70,61 +64,70 @@ Question: {question}
 SQL Query: {query}
 SQL Response: {response}
 """
-prompt = ChatPromptTemplate.from_template(template)
 
-# create chain
+sql_prompt = ChatPromptTemplate.from_template(sql_template)
+
+# Create chain for SQL queries
 sql_chain = (
-    aiprompt
+    db_prompt
     | llm.bind(stop="\nSQL Result:")
     | StrOutputParser()
 )
 
-# create full chain
+# Create full chain
 full_chain = (
-     prompt
+    sql_prompt
     | llm
     | StrOutputParser()
 )
 
-
 ########################## MAIN APP #####################################
 st.title("XERATIC DATABASE CHATBOT")
 
-if 'prompt' not in st.session_state:
-    st.session_state['prompt'] = ""
+# Accept user input
+user_input = st.chat_input("Enter your message:")
 
-# Input field for the user to type a message
-prompt = st.chat_input("Enter your message:")
-if prompt:
-    st.session_state['prompt'] = prompt
-try:
-    if st.session_state['prompt']:
-        with st.spinner("Processing..."):
-            # run query directly without using langchain
-            jawaban = sql_chain.invoke({"schema": db_schema, "question": st.session_state['prompt'], "history_message": history_message})
-            cursor=cnx.cursor()
-            query=(jawaban)
-            cursor.execute(query)
-            data = []
-            for row in cursor:
-                data.append(row)
-            df = pd.DataFrame(data, columns=cursor.column_names)
-            respon = full_chain.invoke({"question": st.session_state['prompt'], "query": jawaban, "response": df, "schema": db_schema})
-            push_history = {'question': st.session_state['prompt'], 'answer':respon}
-            history_message.loc[len(history_message)] = push_history
+if user_input:
+    st.session_state.messages.append({"role": "User", "content": user_input})
 
-        tab_titles = ["Result", "Query", "Reason"]
-        tabs = st.tabs(tab_titles)
-        
-        with tabs[1]:
-            st.write("Generate Query:")
-            st.code(jawaban, language="sql")
-        with tabs[0]:
+    # Run SQL query
+    with st.spinner("Processing..."):
+        query_response = sql_chain.invoke({"schema": db_schema, "question": user_input, "history_message": history_message})
+        st.session_state.messages.append({"role": "Chatbot (SQL Response)", "content": query_response})
+
+        # Execute query and get response
+        cursor = cnx.cursor()
+        cursor.execute(query_response)
+        df = pd.DataFrame(cursor.fetchall(), columns=cursor.column_names)
+
+        # Add query response to chat history
+        st.session_state.messages.append({"role": "Database Output", "content": df})
+
+        # Generate a natural language response
+        natural_response = full_chain.invoke({"question": user_input, "query": query_response, "response": df, "schema": db_schema})
+        st.session_state.messages.append({"role": "Chatbot (Natural Language Response)", "content": natural_response})
+
+# Display chat history
+for message in st.session_state.messages:
+    if message["role"] == "User":
+        st.session_state.messages.append({"role": "user", "content": message["content"]})
+        with st.chat_message("user"):
+            st.markdown(message["content"])
+
+    elif message["role"] == "Chatbot (SQL Response)":
+        st.session_state.messages.append({"role": "assistant", "content": message["content"]})
+        with st.chat_message("assistant"):
+            st.markdown("SQL Query:")
+            st.code(message["content"], language="sql")
+
+    elif message["role"] == "Database Output":
+        st.session_state.messages.append({"role": "assistant", "content": message["content"]})
+        with st.chat_message("assistant"):
             st.write("Database Output:")
-            st.write(df)
-        with tabs[2]:
-            st.write("Reason:")
-            st.write(respon)
+            st.write(message["content"])
 
-except Exception as e:
-    st.write(f"An error occurred: {e}")
+    elif message["role"] == "Chatbot (Natural Language Response)":
+        st.session_state.messages.append({"role": "assistant", "content": message["content"]})
+        with st.chat_message("assistant"):
+            st.write("Natural Language Response:")
+            st.write(message["content"])
