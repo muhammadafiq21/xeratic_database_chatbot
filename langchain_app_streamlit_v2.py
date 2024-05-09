@@ -96,19 +96,21 @@ tab_titles = ["Result","Query","Reason"]
 tabs = st.tabs(tab_titles)
 
 if user_message:
+    
     try:
         # run query dirrectly without using langchain
-        jawaban = sql_chain.invoke({"schema": db_schema, "question": user_message, "history_message": history_message})
-        cursor=cnx.cursor()
-        query=(jawaban)
-        cursor.execute(query)
-        data = []
-        for row in cursor:
-            data.append(row)
-        df = pd.DataFrame(data, columns=cursor.column_names)
-        respon = full_chain.invoke({"question": user_message, "query": jawaban, "response": df, "schema": db_schema})
-        push_history = {'question':user_message, 'answer':respon}
-        history_message.loc[len(history_message)] = push_history
+        with st.spinner("Processing..."):
+          jawaban = sql_chain.invoke({"schema": db_schema, "question": user_message, "history_message": history_message})
+          cursor=cnx.cursor()
+          query=(jawaban)
+          cursor.execute(query)
+          data = []
+          for row in cursor:
+              data.append(row)
+          df = pd.DataFrame(data, columns=cursor.column_names)
+          respon = full_chain.invoke({"question": user_message, "query": jawaban, "response": df, "schema": db_schema})
+          push_history = {'question':user_message, 'answer':respon}
+          history_message.loc[len(history_message)] = push_history
 
         with tabs [1]:
           st.write("Generate Query:")
